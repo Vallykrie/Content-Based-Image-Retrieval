@@ -1,49 +1,36 @@
-# ====== 0. IMPORTS & UTIL ======
 import os, glob, math, warnings
-warnings.filterwarnings("ignore")
-
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise_distances
-
 from skimage.feature import graycomatrix, graycoprops
 from skimage.measure import label
 from skimage.morphology import remove_small_objects
 
-# Helper: baca gambar (BGR->RGB) untuk display dan proses
 def imread_rgb(path):
     img_bgr = cv2.imread(path, cv2.IMREAD_COLOR)
     if img_bgr is None:
         raise FileNotFoundError(path)
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-# Helper: kuantisasi ke 8 level (0..7) untuk GLCM
 def quantize_gray(img_rgb, levels=8):
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-    # skimage.graycomatrix butuh ints [0..levels-1]
     bins = 256 // levels
     q = (gray // bins).astype(np.uint8)
     q[q >= levels] = levels-1
     return q
 
-# Helper: safe division
 def safe_div(a, b):
     return 0.0 if b == 0 else (a / b)
 
-# Helper: tampilkan grid hasil
 def show_topk(query_img, results, title):
-    """results: list of (path, dist) for top-K"""
     K = len(results)
     cols = K + 1
     plt.figure(figsize=(16, 4))
     plt.suptitle(title, fontsize=16)
-    # Query
     ax = plt.subplot(1, cols, 1); ax.axis("off")
     ax.imshow(query_img); ax.set_title("Query Image")
-    # Ranks
     for i, (p, d) in enumerate(results, start=2):
         img = imread_rgb(p)
         ax = plt.subplot(1, cols, i); ax.axis("off")
@@ -60,7 +47,6 @@ def feat_color_hsv(img_rgb, bins=(16,8,8)):
     hist = cv2.calcHist([hsv],[0,1,2],None,[h_bins,s_bins,v_bins],[0,180, 0,256, 0,256]).astype(np.float64)
     hist = cv2.normalize(hist, hist, norm_type=cv2.NORM_L1).flatten()
 
-    # stats per channel
     stats = []
     for c in range(3):
         arr = hsv[:,:,c].astype(np.float64).ravel()
@@ -87,19 +73,17 @@ def feat_glcm(img_rgb, distances=(1,), angles=(0, np.pi/4, np.pi/2, 3*np.pi/4), 
 def feat_shape(img_rgb):
     """Otsu + metrik bentuk dari kontur terbesar: area, perimeter, aspect_ratio, extent, solidity, circularity."""
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-    # Otsu threshold
     thr_val, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     _, bw = cv2.threshold(gray, thr_val, 255, cv2.THRESH_BINARY)
-    # pastikan objek terang (jika kebalik, invert)
+
     if np.mean(bw) < 128:
         bw = cv2.bitwise_not(bw)
 
-    # bersih kecil-kecil
     lab = label(bw > 0)
     bw_clean = remove_small_objects(lab, min_size=64)
     bw_clean = (bw_clean > 0).astype(np.uint8)*255
-
     contours, _ = cv2.findContours(bw_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
     if not contours:
         return np.zeros(6, dtype=np.float64)
 
@@ -131,7 +115,7 @@ class ImageItem:
     color: np.ndarray
     glcm: np.ndarray
     shape: np.ndarray
-    allfeat: np.ndarray  # concat
+    allfeat: np.ndarray
 
 def iter_images(folder, take_ext={".jpg",".jpeg",".png",".bmp"}):
     paths = []
@@ -140,7 +124,6 @@ def iter_images(folder, take_ext={".jpg",".jpeg",".png",".bmp"}):
     return sorted(paths)
 
 def get_label_from_path(p, root="db"):
-    # label = nama subfolder pertama setelah root
     parts = os.path.normpath(p).split(os.sep)
     if root in parts:
         i = parts.index(root)
@@ -165,8 +148,6 @@ def build_db(db_root="db"):
 db_items = build_db("db")
 
 # ====== 3. PENCARIAN ======
-from collections import defaultdict
-
 def compute_matrix(items, kind="color"):
     if kind=="color":
         X = np.vstack([it.color for it in items])
@@ -177,17 +158,13 @@ def compute_matrix(items, kind="color"):
     else:
         raise ValueError(kind)
 
-    # bersihkan NaN/inf dan cegah vektor 0
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float64)
-    # Standarisasi per konfigurasi (penting untuk gabungan)
     scaler = StandardScaler(with_mean=True, with_std=True)
     Xs = scaler.fit_transform(X)
-    # Kalau ada vektor nol, tambahkan epsilon kecil (hindari cosine=NaN)
     norms = np.linalg.norm(Xs, axis=1, keepdims=True)
     Xs[norms.squeeze()==0] += 1e-8
     return Xs, scaler
 
-# Precompute matriks per konfigurasi
 X_color, scaler_color = compute_matrix(db_items, "color")
 X_glcm,  scaler_glcm  = compute_matrix(db_items, "glcm")
 X_all,   scaler_all   = compute_matrix(db_items, "all")
